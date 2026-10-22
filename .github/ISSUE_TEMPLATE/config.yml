@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Dúvida de instalação / uso
+    url: https://github.com/prclskrmr/archicad-wine/discussions
+    about: Use Discussions para perguntas; issues são para bugs e melhorias.
+  - name: Documentação
+    url: https://github.com/prclskrmr/archicad-wine/tree/main/docs
+    about: INSTALL, HISTORY, PATCHES, ARCHITECTURE, TROUBLESHOOTING, TESTING.

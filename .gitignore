@@ -1,0 +1,19 @@
+# binarios
+*.o
+*.exe
+src/rsproxy/rsproxy.dll
+
+# artefatos de teste/diagnostico
+/tmp/
+*.log
+diag.txt
+
+# editores / sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# python
+__pycache__/
+*.pyc

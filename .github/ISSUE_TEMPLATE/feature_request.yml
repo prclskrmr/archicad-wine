@@ -1,0 +1,37 @@
+name: Melhoria / ideia
+description: Sugestão de melhoria, distro nova, ou item do ROADMAP
+title: "[idea] "
+labels: ["melhoria"]
+body:
+  - type: textarea
+    id: ideia
+    attributes:
+      label: A ideia
+    validations:
+      required: true
+
+  - type: textarea
+    id: porque
+    attributes:
+      label: Por que isso ajuda
+      description: Quem se beneficia, o que fica mais simples.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área
+      options:
+        - Ícones da Toolbox
+        - CPU / desempenho
+        - Crash / estabilidade
+        - Instalação / empacotamento (distro)
+        - Proxy de recursos / shim
+        - Documentação / testes
+        - Outro
+
+  - type: checkboxes
+    id: roadmap
+    attributes:
+      label: Já está no ROADMAP?
+      options:
+        - label: Verifiquei ROADMAP.md e não é duplicata

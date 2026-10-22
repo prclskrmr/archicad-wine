@@ -1,0 +1,82 @@
+name: Bug report
+description: Algo não funciona (crash, UI sem texto, projeto não abre...)
+title: "[bug] "
+labels: ["bug", "triagem"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de abrir: rode `docs/TESTING.md › Coleta de diagnóstico` e cole o
+        resultado. Sem `wine --version` + estado do prefixo fica impossível
+        reproduzir.
+
+  - type: textarea
+    id: sintoma
+    attributes:
+      label: O que acontece
+      description: Sintoma direto, sem interpretação.
+      placeholder: "Ao abrir o projeto X, a janela aparece por 2 s e o processo morre."
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: O que deveria acontecer
+    validations:
+      required: true
+
+  - type: textarea
+    id: passos
+    attributes:
+      label: Como reproduzir
+      placeholder: |
+        1. archicad29 'Z:\...\projeto.pln'
+        2. esperar a janela principal
+        3. clicar em ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: etapa
+    attributes:
+      label: Em que etapa falha
+      options:
+        - Instalação (install.sh / winetricks)
+        - Abrir o Archicad (splash/About)
+        - Abrir um projeto
+        - Durante o uso
+        - Salvar
+        - Fechar
+        - Outro
+    validations:
+      required: true
+
+  - type: textarea
+    id: diag
+    attributes:
+      label: Diagnóstico (diag.txt do TESTING.md)
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: rpt
+    attributes:
+      label: Relatório do Graphisoft (.RPT) — se houver
+      description: |
+        Cole as 30 primeiras linhas ou anexe o arquivo.
+        NUNCA anexe o projeto do cliente.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmações
+      options:
+        - label: Rodei `scripts/install.sh` (patches aplicados)
+          required: true
+        - label: Conferi que `llvm-readobj --coff-imports RS.dll` mostra `rsproxy.dll`
+          required: true
+        - label: Li docs/TROUBLESHOOTING.md
+          required: true

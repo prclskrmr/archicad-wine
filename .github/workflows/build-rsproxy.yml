@@ -1,0 +1,42 @@
+name: build-rsproxy
+
+on:
+  push:
+    paths:
+      - 'src/rsproxy/**'
+      - '.github/workflows/build-rsproxy.yml'
+  pull_request:
+    paths:
+      - 'src/rsproxy/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 binutils-mingw-w64-x86-64
+
+      - name: Compilar rsproxy.dll
+        run: make -C src/rsproxy
+
+      - name: Sanidade (exports e forwarders)
+        run: |
+          make -C src/rsproxy check
+          x86_64-w64-mingw32-objdump -p src/rsproxy/rsproxy.dll \
+            | sed -n '/The Export Tables/,/^$/p' | head -30
+
+      - name: Conferir que o binario versionado esta atualizado
+        run: |
+          if ! cmp -s src/rsproxy/rsproxy.dll dist/rsproxy.dll; then
+            echo "::warning::dist/rsproxy.dll difere do build atual — rode 'make -C src/rsproxy dist' e commite"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsproxy-dll
+          path: src/rsproxy/rsproxy.dll

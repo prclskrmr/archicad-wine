@@ -1,0 +1,53 @@
+# Maintainer: prclskrmr <https://github.com/prclskrmr>
+#
+# Archicad 29 no Wine: launcher + proxy de recursos + instalador.
+#
+# O pacote NAO instala o Archicad (software proprietario). Ele instala:
+#   /usr/bin/archicad29                     launcher
+#   /usr/share/archicad-wine/               scripts, docs, fonte, binario
+#
+# Depois de instalar, rode:
+#   sudo -u $USER archicad-wine-install --installer /caminho/Archicad-29-INT.exe
+#   (ou sem --installer, se o Archicad ja estiver no prefixo)
+
+pkgname=archicad-wine-git
+pkgver=r1.0.0
+pkgrel=1
+pkgdesc="Archicad 29 no Linux via Wine (launcher, proxy MUI e correcoes de CRT)"
+arch=('x86_64')
+url="https://github.com/prclskrmr/archicad-wine"
+license=('MIT')
+depends=('wine' 'winetricks' 'python')
+makedepends=('mingw-w64-gcc')
+provides=('archicad-wine')
+conflicts=('archicad-wine')
+options=(!strip)
+
+source=("$pkgname::git+https://github.com/prclskrmr/archicad-wine.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$pkgname"
+    printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$pkgname"
+    make -C src/rsproxy
+}
+
+package() {
+    cd "$pkgname"
+
+    install -Dm755 scripts/archicad29.sh "$pkgdir/usr/bin/archicad29"
+    install -Dm755 scripts/install.sh    "$pkgdir/usr/bin/archicad-wine-install"
+    install -Dm755 scripts/uninstall.sh  "$pkgdir/usr/bin/archicad-wine-uninstall"
+
+    install -d "$pkgdir/usr/share/archicad-wine"
+    cp -r scripts src tools docs packaging "$pkgdir/usr/share/archicad-wine/"
+    install -m644 README.md ROADMAP.md CONTRIBUTING.md LICENSE \
+        "$pkgdir/usr/share/archicad-wine/"
+
+    install -d "$pkgdir/usr/share/archicad-wine/dist"
+    install -m755 src/rsproxy/rsproxy.dll "$pkgdir/usr/share/archicad-wine/dist/rsproxy.dll"
+}
