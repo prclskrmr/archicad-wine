@@ -12,7 +12,8 @@ Legenda: 🔴 bloqueia uso sério · 🟡 incomoda · 🟢 polimento
 **Estado:** diagnóstico feito, causas erradas eliminadas.
 `LoadImage` decodifica 11.207/11.231 ícones do `Archicad.exe`; os 23 "vazios"
 são silhuetas pretas com alfa legítimas; os `.mui` não têm ícones; todas as bases
-`I<id>` têm variante `&96`. Ver [docs/ICONS.md](docs/ICONS.md).
+`I<id>` têm variante `&96`. A chave interna `PNG Icon Loading Patch` (0 → 1) foi
+testada e **não** resolve por completo. Ver [docs/ICONS.md](docs/ICONS.md).
 
 **Hipótese principal:** caminho Direct2D/WIC do `DG` (o `D2DWRenderManager` é
 usado para desenhar a UI) devolvendo bitmap vazio para certos PNGs.

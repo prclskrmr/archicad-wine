@@ -81,6 +81,28 @@ Ver tabela da seção 1: todo ícone tem variante `&96`, e o prefixo não define
 Os ícones existem no módulo (`Archicad.exe` / `ACUserInterface.dll`) e o Wine os
 decodifica. Logo, o problema está **depois** do carregamento.
 
+### 2.5 Chave interna `PNG Icon Loading Patch` (testada)
+
+O GS guarda, em `HKCU\Software\GRAPHISOFT\Archicad\Archicad 29.0.0 INT R1\Dialog Manager`,
+uma opção chamada **`PNG Icon Loading Patch`** (default `0`). É a única chave do
+registro que menciona o carregamento de ícones PNG — ou seja, o próprio GS tem um
+"modo alternativo" para isso.
+
+Teste feito: com `= 0` (default) → faltam ícones; com `= 1` → **continua faltando
+parte deles**. Ou seja: o switch muda algo no caminho, mas não é a causa raiz.
+Ficou documentado porque é o primeiro lugar onde olhar em qualquer investigação
+futura, e porque reverter é trivial:
+
+```bash
+wine reg add 'HKCU\Software\GRAPHISOFT\Archicad\Archicad 29.0.0 INT R1\Dialog Manager' \
+     /v 'PNG Icon Loading Patch' /t REG_DWORD /d 0 /f
+```
+
+Também foi criado `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
+(`AppsUseLightTheme=1`, `SystemUsesLightTheme=1`): o Wine não define tema nenhum,
+e o GS tinge ícones conforme o tema. Não mudou o sintoma, mas elimina a variável.
+
+
 ---
 
 ## 3. Hipóteses restantes (em ordem de probabilidade)
