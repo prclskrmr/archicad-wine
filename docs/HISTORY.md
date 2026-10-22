@@ -133,11 +133,17 @@ DG.dll      + 709453
 Archicad.exe+ 32665260
 ```
 
-**Status:** **não é fatal** — é tratado pelo VEH do GS, gera `.RPT` e o app
-continua (o log termina com `End of Shutdown`). É o que faz aparecer
-"Something went wrong" de vez em quando. Suspeita: caminho de OLE/drag-and-drop
-da janela transparente do `DG` (`DoDragDrop`/`IDropTarget`) não implementado no
-Wine. Está no [ROADMAP](../ROADMAP.md) como item aberto.
+**Status:** **pode ser fatal.** Na maioria das vezes é tratado pelo VEH do GS
+(gera `.RPT`, aparece "Something went wrong" e o app continua, saindo com
+`End of Shutdown`). Mas o mesmo endereço já apareceu como
+`Unhandled Exception (process terminated)` — ver
+`Archicad-20261022(20-43-44)-[832]-1-FATAL.RPT`, thread principal 1344,
+`combase.dll + 130526` (leitura de `NULL`) ← `DG.dll + 1730786`.
+
+Suspeita: caminho de OLE/drag-and-drop da janela transparente do `DG`
+(`DoDragDrop`/`IDropTarget`) não implementado no Wine. Está no
+[ROADMAP](../ROADMAP.md) como item aberto — **prioridade alta**, porque é a
+causa conhecida de perda de sessão (o autosave cobre, mas incomoda).
 
 Observação: matar os processos `GSCEF` (Learning Center/CEF) **por PID** não
 derruba o app, mas aumenta a chance desse caminho ser exercitado. O jeito
