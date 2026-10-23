@@ -110,8 +110,8 @@ a cada repaint e o log passa de 50 MB em minutos.
 
 ## 3. Shim de CRT (`__stdio_common_vsprintf_s`)
 
-O `Archicad.exe` guarda em um slot global (`RVA 0x25E1DD0`) o ponteiro para a
-função de formatação do `ucrtbase`. O GS formata o timestamp do log assim:
+O `Archicad.exe` guarda em um slot global o ponteiro para a função de formatação
+do `ucrtbase`. O GS formata o timestamp do log assim:
 
 ```c
 __stdio_common_vsprintf_s(0x2, buf, (size_t)-1, "[%hhu:%hhu:%hhu]%lln", NULL, ap);
@@ -120,23 +120,47 @@ __stdio_common_vsprintf_s(0x2, buf, (size_t)-1, "[%hhu:%hhu:%hhu]%lln", NULL, ap
 Dois problemas simultâneos:
 
 1. `%n` não existe no `ucrtbase` do Wine → o formatador faz o "write-back" de
-   contagem usando `buf + bufcnt`, com `bufcnt = SIZE_MAX`.
+   contagem usando `buf + bufcnt`, com `bufcnt = SIZE_MAX` (ou seja, escreve em
+   `buf - 1`).
 2. `buf` aponta para dentro de `GSRoot.dll`, em página **`PAGE_READONLY`**
    (seção protegida pelo Wibu) — então até uma escrita "correta" ali falharia.
 
-### A sequência
+### Como o slot é encontrado (sem RVA fixo)
+
+```c
+aneis = { GetProcAddress(ucrtbase, "__stdio_common_vsprintf_s"),
+          ..._vsprintf, ..._vsprintf_p, ..._vsnprintf_s };
+para cada seção GRAVÁVEL e não-executável do Archicad.exe:
+    para cada qword alinhado:
+        se |valor - algum_anel| <= 0x400:  achou o slot
+```
+
+Por que a janela de ±0x400 e não igualdade: **nesta build o GS guarda um
+ponteiro interior** — `__stdio_common_vsprintf_s + 0xA0`, não o endereço
+exportado. Comparar só com o export não acha nada (foi o que aconteceu na
+primeira versão da varredura). A janela cobre o ponteiro interior e continua
+sendo específica o bastante (não pega `memcpy`, `free` etc., que estão a
+megabytes de distância).
+
+Se a varredura não achar nada (build muito diferente), cai no RVA conhecido
+desta build (`0x25E1DD0`) — e ele pode ser trocado por ambiente, sem recompilar:
+
+```bash
+RSPROXY_SLOT_RVA=0x25E1DD0 archicad29     # hex, RVA dentro do Archicad.exe
+```
+
+O log diz qual caminho foi usado:
 
 ```
-thread própria (criada no DllMain)
-  loop a cada 50 ms:
-    exe = GetModuleHandleW(NULL)
-    se nome != "Archicad.exe": continua
-    slot = exe + 0x25E1DD0
-    v = *slot
-    se v não está em [ucrtbase, ucrtbase+0x400000): continua
-    VirtualProtect(slot, 8, PAGE_READWRITE)      // página do slot também é RO
-    InterlockedExchangePointer(slot, &crt_vsprintf_s)
+crtfix: 1 slot(s) por varredura (alvo 0x6ffffe9317a0)
+crtfix: patch slot 0x1425e1dd0 (varredura)
+crtfix: export=0x6ffffe931700, slot por RVA 0x25e1dd0 = 0x1425e1dd0 val=0x6ffffe9317a0  # fallback
 ```
+
+Depois de instalado, a thread só confere os slots já corrigidos a cada 50 ms
+(operação O(1)); não varre a memória de novo (isso queimaria CPU).
+
+### O shim
 
 ```
 crt_vsprintf_s(opts, buf, n, fmt, loc, ap)
@@ -158,8 +182,33 @@ buffer fica no meio de uma. Uma única chamada basta e é memorizada
 - `RSPROXY_SANITIZE=1` reescreve `%n` → `%.0s` para produzir o texto, mas o
   chamador do GS não espera string ali e o app cai. Ficou *opt-in* apenas para
   experimentos.
-- O desvio do slot é por *polling* (50 ms). Se o GS reinicializar o CRT depois
-  (não acontece na prática), o hook se reaplica sozinho.
+
+---
+
+## 3.1. VEH: escrita do CRT em página RO de módulo
+
+O mesmo tipo de falha aparece por **outros** caminhos de formatação (o
+`LibraryManager.dll`, por exemplo, chama o CRT por outro slot). Em vez de caçar
+slot por slot, o proxy registra um *vectored exception handler* que conserta a
+proteção na hora:
+
+```
+ACCESS_VIOLATION?
+  é escrita (ExceptionInformation[0] == 1)?
+  RIP dentro do ucrtbase?
+  destino pertence a um módulo carregado (GetModuleHandleExW FROM_ADDRESS)?
+  página ainda é somente-leitura?           -> VirtualProtect(page, 0x1000, RW)
+  retorna EXCEPTION_CONTINUE_EXECUTION     -> a instrução roda de novo
+```
+
+Qualquer outro caso (leitura inválida, NULL, heap corrompido, destino fora de
+módulo) segue o tratamento normal do Wine/Graphisoft — o handler não mascara
+outros crashes. Há um teto de 512 intervenções e log das 20 primeiras
+(`veh: AV escrita em ... -> RW`). Para desligar em diagnóstico:
+`RSPROXY_VEH=0`.
+
+Detalhe: o crash `%n` original também cai aqui — `buf + SIZE_MAX == buf - 1`,
+que continua dentro da página RO do `GSRoot.dll`. O VEH e o shim se cobrem.
 
 ---
 
@@ -169,7 +218,8 @@ buffer fica no meio de uma. Uma única chamada basta e é memorizada
 |---|---|---|
 | Só `RS.dll` e `GSRoot.dll` importam o proxy | Um terceiro módulo que carregue recursos não terá fallback | aplicar o patch em mais DLLs (`patch-mui.py` já é genérico) |
 | Lista de idiomas fixa | `de`, `fr`, `it`… não funcionam | ler de `LANG`/registro |
-| `RVA 0x25E1DD0` fixo | quebra em outra build do `Archicad.exe` | localizar o slot por assinatura (ver ROADMAP) |
+| Slot de CRT por varredura de ±0x400 | build com layout muito diferente precisa de `RSPROXY_SLOT_RVA` | tabela de âncoras por versão |
+| VEH só cobre escrita do `ucrtbase` em imagem | outros módulos com escrita em RO não são corrigidos | ampliar o filtro com cuidado |
 | Sem hook de `LoadImage`/`LoadIcon` | ícones de `.mui` (não usados hoje) não teriam fallback | estender o proxy |
 | Log em `/tmp/rsproxy.log` | sem rotação | usar `RSPROXY_LOG` + limite |
 

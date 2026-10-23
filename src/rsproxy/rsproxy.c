@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
 
 typedef HRSRC (WINAPI *pFindResourceW)(HMODULE, LPCWSTR, LPCWSTR);
 typedef HRSRC (WINAPI *pFindResourceExW)(HMODULE, LPCWSTR, LPCWSTR, WORD);
@@ -269,6 +270,14 @@ static int g_sanitize;
 static LONG g_crt_entered;
 static int g_buf_rw;
 static int g_buf_rw_fail;
+/* Handler de excecao: o Wibu (CodeMeter) deixa paginas de dados dos DLLs do
+ * Graphisoft como PAGE_READONLY.  O ucrtbase formata direto nessas paginas
+ * (o buffer do log mora dentro do GSRoot.dll) e o store do terminador NUL
+ * estoura.  No Windows essas paginas sao graváveis; aqui a gente conserta a
+ * protecao na hora da falha, so para paginas que pertencem a um modulo. */
+static LONG g_veh_hits;
+static int g_veh_on = 1;
+static LONG g_veh_busy;
 
 /* Wine's ucrtbase has no %n support at all: a format such as
  * "[%hhu:%hhu:%hhu]%lln" makes __stdio_common_vsprintf_s return -1 and
@@ -357,11 +366,106 @@ static int __cdecl crt_vsprintf_s(unsigned __int64 opts, char *buf, size_t n,
     return r;
 }
 
+/* RVA do slot na build 3000 INT (Archicad 29.0.0 INT R1). Usado apenas como
+ * ultimo recurso: o caminho normal e procurar o slot pelo valor (varredura).
+ * Em outra build/idioma, defina RSPROXY_SLOT_RVA (hex) em vez de recompilar. */
+#define CRT_SLOT_RVA_R1 0x25E1DD0
+static uintptr_t g_slot_rva = CRT_SLOT_RVA_R1;
+
+/* Uma pagina e segura para leitura? A varredura percorre secoes de dados do
+ * executavel, e parte delas pode nao estar comprometida (BSS esparso). */
+static int page_readable(const void *p)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(p, &mbi, sizeof(mbi))) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
+    return 1;
+}
+
+/* Procura, nas secoes gravaveis do executavel, slots de ponteiro cujo valor
+ * aponte para uma das funcoes de formatacao do ucrtbase (`anchors`), com
+ * tolerancia de +-0x400.
+ *
+ * Por que tolerancia e nao igualdade: nesta build o Graphisoft guarda um
+ * ponteiro *interior* (__stdio_common_vsprintf_s + 0xA0), nao o endereco
+ * exportado.  Comparar so com o export nao acha nada; a janela em volta das
+ * exportacoes da familia printf acha.  Assim o hook nao depende de RVA.
+ * Devolve quantos slots achou e, em *match, o valor encontrado (a funcao real
+ * a ser chamada pelo shim). */
+static int find_slot_near(HMODULE exe, void *const *anchors, int nanchors,
+                          void ***out, int max, void **match)
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)exe;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    int found = 0;
+    unsigned i;
+
+    if (nanchors <= 0 || dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    nt = (IMAGE_NT_HEADERS *)((char *)exe + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+
+    sec = IMAGE_FIRST_SECTION(nt);
+    for (i = 0; i < nt->FileHeader.NumberOfSections && found < max; i++) {
+        unsigned char *base;
+        size_t size, o;
+
+        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) continue;
+        base = (unsigned char *)exe + sec[i].VirtualAddress;
+        size = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize
+                                       : sec[i].SizeOfRawData;
+        for (o = 0; o + sizeof(void *) <= size; o += sizeof(void *)) {
+            unsigned char *at = base + o;
+            void *v;
+            int k;
+
+            if (((uintptr_t)at & (sizeof(void *) - 1))) continue;
+            if (!page_readable(at)) {
+                size_t page = 0x1000, off = (size_t)((uintptr_t)at & (page - 1));
+                o += page - off - sizeof(void *);
+                continue;
+            }
+            v = *(void **)at;
+            for (k = 0; k < nanchors; k++) {
+                ptrdiff_t d = (char *)v - (char *)anchors[k];
+                if (d < 0) d = -d;
+                if (d <= 0x400) {
+                    out[found++] = (void **)at;
+                    if (match && !*match) *match = v;
+                    break;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+/* Instala o shim em `slot` (protegendo a pagina se preciso). */
+static int patch_slot(void **slot)
+{
+    DWORD old;
+
+    if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) {
+        dbg("crtfix: VirtualProtect(%p) failed %lu", (void *)slot, GetLastError());
+        return 0;
+    }
+    if (!g_slot_rw) {
+        g_slot_rw = 1;
+        dbg("crtfix: page now RW (was %#lx)", old);
+    }
+    InterlockedExchangePointer(slot, (void *)&crt_vsprintf_s);
+    return 1;
+}
+
 static DWORD WINAPI crtfix_thread(LPVOID unused)
 {
     char name[MAX_PATH];
     HMODULE exe, ucrt;
-    void **slot, *v;
+    void *target = NULL;
+    void **patched[64];
+    int npatched = 0, scans = 0;
 
     for (;;) {
         Sleep(50);
@@ -371,28 +475,133 @@ static DWORD WINAPI crtfix_thread(LPVOID unused)
         name[0] = 0;
         GetModuleFileNameA(exe, name, sizeof(name));
         if (!strstr(name, "Archicad.exe")) continue;
-        slot = (void **)((char *)exe + 0x25E1DD0);
-        v = *slot;
-        if (!v || v == (void *)&crt_vsprintf_s) continue;
-        if ((char *)v < (char *)ucrt || (char *)v > (char *)ucrt + 0x400000) continue;
-        if (!g_crt_real) {
-            g_crt_real = (pfn_vsprintf_s)v;
-            dbg("crtfix: real %p, patching slot %p", v, slot);
-        }
-        {
-            DWORD old;
-            if (!g_slot_rw) {
-                if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) {
-                    dbg("crtfix: VirtualProtect failed %lu", GetLastError());
-                    continue;
+        if (npatched == 0) {
+            static const char *const printf_names[] = {
+                "__stdio_common_vsprintf_s",
+                "__stdio_common_vsprintf",
+                "__stdio_common_vsprintf_p",
+                "__stdio_common_vsnprintf_s",
+            };
+            void *anchors[4];
+            int na = 0, n, i;
+
+            for (i = 0; i < (int)(sizeof(printf_names) / sizeof(printf_names[0])); i++) {
+                void *p = (void *)GetProcAddress(ucrt, printf_names[i]);
+                if (p) anchors[na++] = p;
+            }
+            n = find_slot_near(exe, anchors, na, patched, 64, &target);
+            if (!target && na > 0) target = anchors[0];   /* so para o log */
+            if (n > 0) {
+                int ok = 0;
+
+                g_crt_real = (pfn_vsprintf_s)target;
+                dbg("crtfix: %d slot(s) por varredura (alvo %p)", n, target);
+                for (i = 0; i < n; i++) {
+                    dbg("crtfix: patch slot %p (varredura)", (void *)patched[i]);
+                    if (patch_slot(patched[i])) patched[ok++] = patched[i];
                 }
-                g_slot_rw = 1;
-                dbg("crtfix: page now RW (was %#lx)", old);
+                npatched = ok;
+                continue;
+            }
+
+            /* Fallback: RVA conhecido desta build, com validacao de faixa. */
+            {
+                void **slot = (void **)((char *)exe + g_slot_rva);
+                void *v = page_readable(slot) ? *slot : NULL;
+                if (v && v != (void *)&crt_vsprintf_s &&
+                    (char *)v >= (char *)ucrt && (char *)v <= (char *)ucrt + 0x400000) {
+                    g_crt_real = (pfn_vsprintf_s)v;
+                    dbg("crtfix: export=%p, slot por RVA %#lx = %p val=%p",
+                        target, (unsigned long)g_slot_rva, (void *)slot, v);
+                    if (patch_slot(slot)) {
+                        patched[0] = slot;
+                        npatched = 1;
+                    }
+                }
+            }
+            if (!npatched && ++scans % 200 == 1)
+                dbg("crtfix: nenhum slot ainda (export=%p) tentativa %d",
+                    target, scans);
+            continue;
+        }
+        /* Manutencao barata: se o programa reescrever algum slot com o
+           ponteiro original (reinicializacao do CRT), reaplica o shim.
+           Nao varremos a memoria de novo, para nao queimar CPU. */
+        {
+            int i;
+            for (i = 0; i < npatched; i++) {
+                if (patched[i] && *patched[i] != (void *)&crt_vsprintf_s) {
+                    dbg("crtfix: slot %p reescrito, reaplicando", (void *)patched[i]);
+                    patch_slot(patched[i]);
+                }
             }
         }
-        InterlockedExchangePointer(slot, (void *)&crt_vsprintf_s);
     }
     return 0;
+}
+
+/* So age em ACCESS_VIOLATION de escrita, com a instrucao que falhou dentro do
+ * ucrtbase e o destino dentro de um modulo carregado (imagem).  Faz a pagina
+ * ficar gravavel e deixa a instrucao rodar de novo.  Qualquer outro caso
+ * segue o tratamento normal do Wine/Graphisoft. */
+static LONG CALLBACK av_veh_impl(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *er;
+    MEMORY_BASIC_INFORMATION mbi;
+    HMODULE ucrt, owner;
+    void *addr, *page, *rip;
+    DWORD old;
+
+    if (!g_veh_on || !ep || !ep->ExceptionRecord || !ep->ContextRecord)
+        return EXCEPTION_CONTINUE_SEARCH;
+    er = ep->ExceptionRecord;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    if (er->NumberParameters < 2 || er->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;           /* 1 = escrita */
+    addr = (void *)er->ExceptionInformation[1];
+    rip = (void *)ep->ContextRecord->Rip;
+
+    ucrt = GetModuleHandleW(L"ucrtbase.dll");
+    if (!ucrt || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                     (LPCWSTR)rip, &owner))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (owner != ucrt) return EXCEPTION_CONTINUE_SEARCH;
+
+    /* destino tem que pertencer a um modulo carregado (nao e heap/pilha) */
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)addr, &owner))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (!VirtualQuery(addr, &mbi, sizeof(mbi))) return EXCEPTION_CONTINUE_SEARCH;
+    if (mbi.State != MEM_COMMIT) return EXCEPTION_CONTINUE_SEARCH;
+    if (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                       PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+        return EXCEPTION_CONTINUE_SEARCH;           /* ja gravavel: nao e o caso */
+    if (g_veh_hits >= 512) return EXCEPTION_CONTINUE_SEARCH;
+
+    page = (void *)((uintptr_t)addr & ~(uintptr_t)0xFFF);
+    if (!VirtualProtect(page, 0x1000, PAGE_READWRITE, &old)) {
+        dbg("veh: VirtualProtect(%p) falhou %lu", page, GetLastError());
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    g_veh_hits++;
+    if (g_veh_hits <= 20)
+        dbg("veh: AV escrita em %p (pagina %p, era %#lx) -> RW [%ld]",
+            addr, page, (unsigned long)old, g_veh_hits);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+/* Trava de reentrada: o log usa stdio; se o proprio handler causar uma falta,
+ * nao entramos de novo. */
+static LONG CALLBACK av_veh(EXCEPTION_POINTERS *ep)
+{
+    LONG r;
+
+    if (InterlockedCompareExchange(&g_veh_busy, 1, 0)) return EXCEPTION_CONTINUE_SEARCH;
+    r = av_veh_impl(ep);
+    InterlockedExchange(&g_veh_busy, 0);
+    return r;
 }
 
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r)
@@ -402,6 +611,17 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r)
         InitializeCriticalSection(&g_cs);
         if (GetEnvironmentVariableW(L"RSPROXY_VERBOSE", ev, 8)) g_verbose = 1;
         if (GetEnvironmentVariableW(L"RSPROXY_SANITIZE", ev, 8)) g_sanitize = 1;
+        {
+            wchar_t rva[32];
+            if (GetEnvironmentVariableW(L"RSPROXY_SLOT_RVA", rva, 32)) {
+                wchar_t *end = NULL;
+                unsigned long v = wcstoul(rva, &end, 16);
+                if (end && end != rva && v > 0x1000) g_slot_rva = (uintptr_t)v;
+            }
+        }
+        if (GetEnvironmentVariableW(L"RSPROXY_VEH", ev, 8) &&
+            ev[0] == L'0') g_veh_on = 0;
+        if (g_veh_on) AddVectoredExceptionHandler(1, av_veh);
         g_cache = (CACHEENT *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, MAXCACHE * sizeof(CACHEENT));
         init_procs();
         CreateThread(NULL, 0, crtfix_thread, NULL, 0, NULL);

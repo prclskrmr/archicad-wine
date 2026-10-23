@@ -69,11 +69,25 @@ wine reg query 'HKCU\Software\GRAPHISOFT\Archicad\Archicad 29.0.0 INT R1\Bug rep
 
 ```bash
 grep -a 'crtfix' /tmp/rsproxy.log | head
-# esperado:
-#   crtfix: real 0x... slot 0x...
-#   crtfix: page now RW (was 0x4)
+# esperado (caminho normal, slot achado por varredura):
+#   crtfix: 1 slot(s) por varredura (alvo 0x6ffffe9317a0)
+#   crtfix: patch slot 0x1425e1dd0 (varredura)
+#   crtfix: page now RW (was 0x2)
 #   crtfix: ENTER opts=0x2 buf=... n=0xffffffffffffffff fmt=[[%hhu:%hhu:%hhu]%lln]
+# caminho alternativo (fallback por RVA):
+#   crtfix: export=0x6ffffe931700, slot por RVA 0x25e1dd0 = 0x1425e1dd0 val=0x6ffffe9317a0
 ```
+
+Atenção: o GS guarda um **ponteiro interior** (`__stdio_common_vsprintf_s +
+0xA0`); se você for comparar endereços no log, o `alvo` **não** vai ser igual ao
+`export`.
+
+Se aparecer `veh: AV escrita em ... -> RW`, o handler salvou uma escrita do CRT
+numa página RO — o app seguiu normalmente. Se o mesmo endereço aparecer em
+loop, é bug: reporte com o log.
+
+Para desligar o VEH e ver se o crash "original" volta (diagnóstico):
+`RSPROXY_VEH=0 archicad29`.
 
 Se nunca aparece `ENTER`, o shim foi instalado mas o formato não foi usado
 (ok, significa que o crash não seria disparado). Se aparecer
@@ -100,6 +114,27 @@ Ver [ICONS.md](ICONS.md) para o estado atual.
 
 ---
 
+### 6. Ler um crash dump (`.dmp`)
+
+Quando o crash mata o reportador, **não** sai `.RPT` — só o minidump em
+`drive_c/users/<user>/Graphisoft/BugReporting-29/`. O `tools/dmpstack.py` (sem
+dependências) mostra a exceção e a pilha provável:
+
+```bash
+B="$WINEPREFIX/drive_c/users/$USER/Graphisoft/BugReporting-29"
+ls -t "$B"/*.dmp | head
+tools/dmpstack.py "$B/CrashDump-....dmp"          # exceção + pilha da thread
+tools/dmpstack.py --modules "$B"/CrashDump-....dmp  # só os módulos carregados
+tools/dmpstack.py --all "$B"/CrashDump-....dmp      # todas as threads
+```
+
+A pilha é heurística: o script varre a memória da pilha atrás de valores que
+caiam dentro de módulos e imprime `modulo + offset` em ordem de endereço
+(crescente = ordem de chamada). Não substitui um unwinder de verdade, mas
+localiza o módulo culpado — foi assim que o Bug 5.1 apareceu.
+
+---
+
 ## Medições úteis (para comparar antes/depois)
 
 ```bash
@@ -109,8 +144,11 @@ wine --version; cat "$WINEPREFIX/.update-timestamp"
 # GPU / driver
 glxinfo -B | grep -E 'device|OpenGL renderer|OpenGL version'
 
-# uso de CPU do Archicad (thread principal)
-ps -o pid,etime,pcpu,nlwp -p "$(pgrep -x Archicad.exe)"
+# uso de CPU do Archicad — NÃO use pgrep -x: a thread principal é renomeada
+# para CrBrowserMain. Pegue o PID pelo cmdline:
+PID=$(for d in /proc/[0-9]*; do tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q '^Archicad.exe' && echo "${d#/proc/}"; done | head -1)
+ps -o pid,etime,pcpu,nlwp -p "$PID"
+top -b -H -n 1 -p "$PID" | head -10         # por thread
 
 # janelas reais (nomes que o Wine reporta)
 tools/acstate.sh

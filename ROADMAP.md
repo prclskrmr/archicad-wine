@@ -58,8 +58,12 @@ com o `.RPT` (o endereço exato está nele).
 ## 🟡 3. CPU ~70% na thread principal (CEF / Learning Center)
 
 **Estado:** não é o logging do proxy (build silencioso tem o mesmo perfil). A
-thread é a do CEF (`CrBrowserMain`). Suspeita: laço de repaint do
-`DGTransparentWindow` ou do browser host.
+thread é a do CEF (`CrBrowserMain`): medido com `top -H`, a thread principal
+(TID = PID) fica em **~100%**, e uma `Timer-S...` em ~10%. `perf` não está
+instalado e `ptrace_scope=1` bloqueia `gdb`/`eu-stack` em processo já rodando —
+para amostrar a pilha é preciso ou instalar `perf` (`pacman -S perf`) ou subir o
+app como filho do `gdb`. Suspeita: laço de repaint do `DGTransparentWindow` ou
+do browser host.
 
 **Como atacar:**
 
@@ -75,19 +79,19 @@ substituir o host do Learning Center por um stub.
 
 ---
 
-## 🟡 4. Localizar o slot de CRT por assinatura (não por RVA fixo)
+## ✅ 4. Localizar o slot de CRT por assinatura (não por RVA fixo)
 
-**Estado:** `Archicad.exe + 0x25E1DD0` é o slot de `__stdio_common_vsprintf_s`
-nesta build (3000 INT). Em outra build/idioma o offset muda e o shim não instala
-(sintoma: o crash `ucrtbase+0x16234` volta).
+**Estado:** feito. A varredura percorre as seções graváveis do `Archicad.exe`
+procurando qwords a até **±0x400** das exportações `__stdio_common_vsprintf*`
+do `ucrtbase` — necessário porque o GS guarda um **ponteiro interior**
+(`__stdio_common_vsprintf_s + 0xA0`), não o endereço exportado. Se não achar,
+usa o RVA desta build, que agora também pode ser passado por
+`RSPROXY_SLOT_RVA=<hex>` sem recompilar. Ver
+[ARCHITECTURE §3](docs/ARCHITECTURE.md#3-shim-de-crt-__stdio_common_vsprintf_s).
 
-**Solução:** varrer as seções de dados procurando um ponteiro dentro de
-`ucrtbase` cujo alvo, desmontado, tenha o prólogo típico de
-`__stdio_common_vsprintf_*`, e validar com uma chamada de teste em buffer
-conhecido. Alternativa mais simples e robusta: **hookar a exportação**
-`__stdio_common_vsprintf_s` do `ucrtbase` (patch de IAT global) em vez do slot
-interno — mas o GS chama por ponteiro resolvido em runtime, então o slot é o
-caminho.
+**O que falta:** um teste que rode a varredura contra uma cópia do
+`Archicad.exe` **sem** precisar abrir o app (hoje a validação é pelo log na
+primeira abertura).
 
 ---
 
@@ -169,3 +173,6 @@ formato contiver `%n`, formatando tudo por conta própria.
 | OOP reporter matando o app | [HISTORY §Bug 3](docs/HISTORY.md#bug-3--o-supervisor-de-bug-report-mata-o-programa) |
 | Crash fatal `%lln` | [HISTORY §Bug 4](docs/HISTORY.md#bug-4--crash-fatal-em-ucrtbase0x16234-o-problema-real) |
 | Launcher que se auto-atualiza | [PATCHES §2](docs/PATCHES.md#2-rsproxydll-novo-arquivo) |
+| Slot de CRT por varredura (±0x400) + `RSPROXY_SLOT_RVA` | [ARCHITECTURE §3](docs/ARCHITECTURE.md#3-shim-de-crt-__stdio_common_vsprintf_s) |
+| VEH para escrita do CRT em página RO de módulo | [HISTORY §Bug 5.1](docs/HISTORY.md#bug-51--ucrtbase0x17234-escrevendo-em-gsrootdll-o-mesmo-mal-outro-caminho) |
+| `tools/dmpstack.py` (pilha a partir do minidump) | [TESTING](docs/TESTING.md#6-ler-um-crash-dump-dmp) |

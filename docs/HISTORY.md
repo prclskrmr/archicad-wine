@@ -151,6 +151,55 @@ seguro de fechar o Learning Center é pela própria janela.
 
 ---
 
+## Bug 5.1 — `ucrtbase+0x17234` escrevendo em `GSRoot.dll` (o mesmo mal, outro caminho)
+
+**Sintoma:** sessões terminando com `Unhandled Exception from GSMain (process
+terminated)` **sem** `.RPT` (o reportador morre antes de gravar) e um
+`CrashDump-*.dmp` de ~300 KB. Foi preciso ler o dump.
+
+**Ferramenta:** [`tools/dmpstack.py`](../tools/dmpstack.py), escrito para isso —
+lê o minidump, imprime exceção, registradores e varre a pilha mapeando cada
+qword para `modulo + offset`:
+
+```bash
+tools/dmpstack.py "$B"/CrashDump-20261022\(21-36-03.662\)-\[356-360\].dmp
+```
+
+Saída resumida:
+
+```
+excecao: ACCESS_VIOLATION (0xC0000005)
+  endereco: 0x00006ffffe927234  -> ucrtbase.dll+0x17234
+  parametros: 0x1, 0x6ffffbb9de88        # 1 = escrita
+thread da excecao (tid 360):
+  rip=ntdll.dll+0xec74
+  pilha: LibraryManager.dll, GSRoot.dll, tbbmalloc.dll, ...
+```
+
+**Diagnóstico:** de novo uma **escrita do `ucrtbase` numa página somente-leitura
+do `GSRoot.dll`** (`GSRoot.dll+0xDDE88`), só que por outro caminho de formatação
+(chamado pelo `LibraryManager`), não pelo slot do timestamp. O `ucrtbase` em uso
+é o **builtin do Wine** (4,5 MB), não o nativo do `vcrun2022` — e o GS guarda no
+slot um **ponteiro interior**: `__stdio_common_vsprintf_s + 0xA0`
+(RVA `0x217A0`), o que explica a varredura por igualdade não achar nada.
+
+**Correções:**
+
+1. A varredura do slot passou a aceitar ponteiros **até ±0x400** das
+   exportações da família printf (achando o ponteiro interior).
+2. Foi adicionado um **VEH** (`AddVectoredExceptionHandler`) no `rsproxy`: se a
+   falha for escrita do `ucrtbase` em página de um módulo carregado ainda
+   somente-leitura, ele faz a página `PAGE_READWRITE` e retoma a instrução. Isso
+   cobre **toda** a classe, não só o timestamp. Ver
+   [ARCHITECTURE §3.1](ARCHITECTURE.md#31-veh-escrita-do-crt-em-página-ro-de-módulo).
+
+**Por que isso acontece no Linux e não no Windows:** as seções de dados do
+`GSRoot.dll` ficam RO por causa do Wibu/CodeMeter; no Windows o loader/Wibu
+acaba deixando-as graváveis. O VEH devolve a semântica esperada sem tocar no
+binário.
+
+---
+
 ## Bug 6 — CPU em ~70% na thread principal
 
 **Sintoma:** com o editor aberto, a thread principal (`CrBrowserMain`, o CEF

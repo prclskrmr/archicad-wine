@@ -84,6 +84,8 @@ Comportamento conforme variáveis de ambiente:
 | *(nenhuma)* | logging de recursos só nas ~20 primeiras linhas |
 | `RSPROXY_VERBOSE=1` | loga toda consulta (`SAT`, `MISS`, `RESLOAD`, `SATLOADFAIL`) em `/tmp/rsproxy.log` |
 | `RSPROXY_SANITIZE=1` | reescreve `%n` → `%.0s` — **derruba o app**, não use (ver [HISTORY](HISTORY.md#bug-4--crash-fatal-em-ucrtbase0x16234-o-problema-real)) |
+| `RSPROXY_SLOT_RVA=<hex>` | RVA do slot de CRT, para outra build/idioma do `Archicad.exe` (padrão `0x25E1DD0`). A varredura automática roda antes; isto é só o fallback |
+| `RSPROXY_VEH=0` | desliga o handler de exceção que torna gravável a página RO de módulo (diagnóstico) |
 
 Fonte: [`src/rsproxy/rsproxy.c`](../src/rsproxy/rsproxy.c) ·
 build: [`src/rsproxy/Makefile`](../src/rsproxy/Makefile).
