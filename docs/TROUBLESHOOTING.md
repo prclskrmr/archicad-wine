@@ -170,3 +170,25 @@ normalmente resolvido com `wineboot -u` e reinício do prefixo.
 | ícones de ferramentas desabilitadas em cinza | estado da ferramenta, não bug |
 | primeira abertura de projeto lenta | compilação de bibliotecas GDL |
 | paleta Toolbox sem ícones em janela estreita | modo "só texto" da UI |
+
+## Fontconfig para evitar fallback de fontes
+Se textos aparecerem como quadrados ou com fallback ruim (ex.: Droid Sans Fallback), o projeto agora suporta `fontconfig-archicad.conf`.
+
+- Arquivo: `fontconfig-archicad.conf` na raiz do repo (copiado/adaptado do ArchicadOnLinux)
+- O launcher `scripts/archicad29.sh` exporta `FONTCONFIG_FILE` automaticamente se o arquivo existir
+- Para gerar/atualizar manualmente: basear-se em `09-gen-fontconfig.sh` do ArchicadOnLinux ou ajustar `fontconfig-archicad.conf` diretamente
+
+## Ferramentas de debug (winlist/dwsize/dlgpaint/rgndump/tomtest/psgetproc)
+Adicionadas ao `tools/` (compiladas com mingw-w64). Úteis para investigar janelas, paletas, DirectWrite, RichEdit/TOM.
+
+Compilar: `cd tools && ./build.sh` (requer `x86_64-w64-mingw32-gcc`).
+
+Uso típico (com prefixo/wine configurados):
+```bash
+export WINEPREFIX=~/.local/share/wineprefixes/archicad29
+wine tools/winlist.exe
+wine tools/dwsize.exe
+wine tools/tomtest.exe
+```
+
+Ver [ArchicadOnLinux](~/Work/ArchicadOnLinux/README.md) para detalhes de uso.

@@ -24,6 +24,12 @@ export WINEPREFIX="${WINEPREFIX:-$HOME/.local/share/wineprefixes/archicad29}"
 export WINEARCH=win64
 export WINEDEBUG="${WINEDEBUG:--all}"
 
+# Fontconfig: evita fallback para fontes sem glifos latinos (ex.: Droid Sans Fallback)
+REPO_DIR_FONT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+if [ -z "${FONTCONFIG_FILE:-}" ] && [ -f "$REPO_DIR_FONT/fontconfig-archicad.conf" ]; then
+    export FONTCONFIG_FILE="$REPO_DIR_FONT/fontconfig-archicad.conf"
+fi
+
 # AMD: algumas RDNA2 precisam do override para o ROCm/OpenGL; inofensivo em
 # outras GPUs (so afeta bibliotecas ROCm/HSA).
 : "${HSA_OVERRIDE_GFX_VERSION:=10.3.0}"
